@@ -31,15 +31,15 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
      */
     private final Map<Vm, Host> savedAllocation;
 
-    private final int iterations = 10;
+    private final int iterations = 2;
     private final int countAnts = 10;
-    private final double exploitationParam = 0.4;
-    private final int beta = 2;
-    private final int gamma = 3;
-    private final double rho = 0.4;
-    private final double alpha = 0.25;
+    private final double exploitationParam = 0.9;
+    private final double beta = 0.9;
+    private final int gamma = 5;
+    private final double rho = 0.1;
+    private final double alpha = 0.1;
     private final Map<Triple<Host, Vm, Host>, Double> pheromoneMap;
-    private final double initialPheromone = 100.0;
+    private final double initialPheromone = 1.0;
 
     public VMAllocationACO() {
         super(new PowerVmSelectionPolicyMinimumUtilization());
@@ -51,13 +51,20 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
     @Override
     public Map<Vm, Host> getOptimizedAllocationMap(List<? extends Vm> vmList) {
         final Set<Host> overloadedHosts = getOverloadedHosts();
+        LOGGER.debug("Overloads: {}", overloadedHosts);
         final Set<Host> underloadedHosts = getUnderloadedHosts();
 
         final Set<Host> targetHosts = getTargetHosts(overloadedHosts);
         final Set<Host> sourceHosts = getSourceHosts(underloadedHosts, overloadedHosts);
-        final Set<Triple<Host, Vm, Host>> finalTuples = this.getTuplesAndInitializePheromones(vmList, targetHosts);
+        LOGGER.debug("Targets: {}", targetHosts);
+        LOGGER.debug("Sources: {}", sourceHosts);
+        final Set<Triple<Host, Vm, Host>> finalTuples = this.getTuplesAndInitializePheromones(vmList, targetHosts)
+                .stream().filter((tuple) -> sourceHosts.contains(tuple.getLeft())).collect(Collectors.toSet());
 
         saveAllocation();
+
+        if (sourceHosts.isEmpty() || targetHosts.isEmpty() || vmList.isEmpty())
+            return new HashMap<>();
 
         Set<Triple<Host, Vm, Host>> globalMigrationPlan = null;
         double globalScore = -1;
@@ -68,18 +75,20 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
                 availableTuples.addAll(finalTuples);
                 Set<Triple<Host, Vm, Host>> localMigrationPlan = new HashSet<>();
                 double localScore = 0;
-                for (Triple<Host, Vm, Host> tuple : finalTuples) {
-                    Host source = tuple.getLeft();
-                    if (!sourceHosts.contains(source))
-                        continue;
-
-                    Triple<Host, Vm, Host> nextTriple;
-                    Optional<Triple<Host, Vm, Host>> optional = chooseNextTriple(availableTuples);
-                    if (optional.isPresent())
-                        nextTriple = optional.get();
-                    else
+                Set<Vm> availableVms = new HashSet<>();
+                availableVms.addAll(vmList);
+                Optional<Triple<Host, Vm, Host>> optional = chooseNextTriple(availableTuples);
+                Triple<Host, Vm, Host> nextTriple;
+                while (optional.isPresent()) {
+                    if (availableVms.isEmpty())
                         break;
+                    nextTriple = optional.get();
                     availableTuples.remove(nextTriple);
+                    if (!availableVms.contains(nextTriple.getMiddle())) {
+                        optional = chooseNextTriple(availableTuples);
+                        continue;
+                    }
+                    availableVms.remove(nextTriple.getMiddle());
                     updateLocalPheromone(nextTriple);
                     updateUsedCapacity(nextTriple);
                     localMigrationPlan.add(nextTriple);
@@ -89,12 +98,15 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
                     } else {
                         localMigrationPlan.remove(nextTriple);
                     }
+                    // LOGGER.info("Migration plan: {}", localMigrationPlan);
+                    optional = chooseNextTriple(availableTuples);
                 }
                 LOGGER.info("Ant {}: score = {}", ant, localScore);
                 if (globalScore < 0 || localScore > globalScore) {
                     globalMigrationPlan = localMigrationPlan;
                     globalScore = localScore;
                 }
+                // LOGGER.debug("Global plan = {}", globalMigrationPlan);
                 LOGGER.info("Global score = {}", globalScore);
             }
             updateGlobalPheromones(globalMigrationPlan, globalScore);
@@ -173,7 +185,8 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         for (Vm vm : vmList) {
             Host source = vm.getHost();
             for (Host target : targetHosts) {
-                result.add(Triple.of(source, vm, target));
+                if (source != target)
+                    result.add(Triple.of(source, vm, target));
                 this.pheromoneMap.put(Triple.of(source, vm, target), this.initialPheromone);
             }
         }
@@ -219,6 +232,14 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         return targetHosts;
     }
 
+    private boolean _isHostUnderloadAndActive(final Host host) {
+        return host.isActive() && host.getUtilizationOfCpu() < 0.2;
+    }
+
+    private boolean _isHostOverloaded(final Host host) {
+        return host.getUtilizationOfCpu() > 0.5;
+    }
+
     @Override
     public double getOverUtilizationThreshold(Host host) {
         return 0.9;
@@ -233,7 +254,7 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
      * @return the over utilized hosts
      */
     private Set<Host> getOverloadedHosts() {
-        return this.getHostList().stream().filter(this::isHostOverloaded)
+        return this.getHostList().stream().filter(this::_isHostOverloaded)
                 .filter(host -> host.getVmsMigratingOut().isEmpty()).collect(Collectors.toSet());
     }
 
@@ -246,7 +267,7 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
      * @return the under utilized hosts
      */
     private Set<Host> getUnderloadedHosts() {
-        return this.getHostList().stream().filter(this::isHostUnderloaded)
+        return this.getHostList().stream().filter(this::_isHostUnderloadAndActive)
                 .filter(host -> host.getVmsMigratingOut().isEmpty()).collect(Collectors.toSet());
     }
 
@@ -284,10 +305,5 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
                 return;
             }
         }
-    }
-
-    @Override
-    protected double getPowerAfterAllocation(Host host, Vm vm) {
-        return 1;
     }
 }

@@ -14,8 +14,13 @@ import org.cloudbus.cloudsim.datacenters.Datacenter;
 import org.cloudbus.cloudsim.datacenters.DatacenterSimple;
 import org.cloudbus.cloudsim.hosts.Host;
 import org.cloudbus.cloudsim.hosts.HostSimple;
+import org.cloudbus.cloudsim.power.models.PowerModelLinear;
+import org.cloudbus.cloudsim.provisioners.ResourceProvisionerSimple;
 import org.cloudbus.cloudsim.resources.Pe;
 import org.cloudbus.cloudsim.resources.PeSimple;
+import org.cloudbus.cloudsim.schedulers.cloudlet.CloudletSchedulerTimeShared;
+import org.cloudbus.cloudsim.schedulers.vm.VmSchedulerTimeShared;
+import org.cloudbus.cloudsim.utilizationmodels.UtilizationModel;
 import org.cloudbus.cloudsim.utilizationmodels.UtilizationModelDynamic;
 import org.cloudbus.cloudsim.vms.Vm;
 import org.cloudbus.cloudsim.vms.VmSimple;
@@ -23,20 +28,28 @@ import org.cloudbus.cloudsim.vms.VmSimple;
 // endregion
 
 public class AntColonyVMP {
-    private int HOSTS = 5;
-    private int HOST_PES = 8;
+    private static int HOSTS = 10;
+    private static int HOST_PES = 12;
 
-    private static final int VMS = 3;
-    private static final int VM_PES = 2;
+    private static final int VMS = HOSTS;
+    private static final int VM_PES = 5;
 
-    private static final int CLOUDLETS = 4;
     private static final int CLOUDLET_PES = 2;
-    private static final int CLOUDLET_LENGTH = 10000;
+    private static final int CLOUDLET_LENGTH = 20000;
+
+    private static final int CLOUDLETS_BY_VM = 4;
+
+    /**
+     * Defines the speed (in percentage) that CPU usage of a cloudlet will increase
+     * during the simulation time. (in scale from 0 to 1, where 1 is 100%).
+     */
+    private static final double CLOUDLET_CPU_USAGE_INCREMENT_PER_SECOND = 0.05;
 
     private final CloudSim simulation;
     private Datacenter datacenter;
     private DatacenterBroker broker;
     private VMAllocationACO vmAllocationACO;
+    private List<Vm> vmList;
 
     public static void main(String[] args) {
         new AntColonyVMP();
@@ -48,8 +61,9 @@ public class AntColonyVMP {
 
         broker = new DatacenterBrokerSimple(simulation);
 
-        broker.submitVmList(createVms());
-        broker.submitCloudletList(createCloudlets());
+        vmList = createVms();
+        broker.submitVmList(vmList);
+        createAndSubmitCloudlets();
 
         simulation.start();
     }
@@ -73,15 +87,18 @@ public class AntColonyVMP {
             peList.add(new PeSimple(1000));
         }
 
-        final long ram = 2048; // in Megabytes
-        final long bw = 10000; // in Megabits/s
+        final long ram = 500000; // in Megabytes
+        final long bw = 100000000L; // in Megabits/s
         final long storage = 1000000; // in Megabytes
 
         /*
          * Uses ResourceProvisionerSimple by default for RAM and BW provisioning and
-         * VmSchedulerSpaceShared for VM scheduling.
+         * VmSchedulerTimeShared for VM scheduling.
          */
-        return new HostSimple(ram, bw, storage, peList);
+        Host host = new HostSimple(ram, bw, storage, peList);
+        host.setVmScheduler(new VmSchedulerTimeShared()).setPowerModel(new PowerModelLinear(1000, 0.7))
+                .setRamProvisioner(new ResourceProvisionerSimple()).setBwProvisioner(new ResourceProvisionerSimple());
+        return host;
     }
 
     /**
@@ -92,7 +109,7 @@ public class AntColonyVMP {
         for (int i = 0; i < VMS; i++) {
             // Uses a CloudletSchedulerTimeShared by default to schedule Cloudlets
             final Vm vm = new VmSimple(1000, VM_PES);
-            vm.setRam(512).setBw(1000).setSize(10000);
+            vm.setRam(10000).setBw(100000).setSize(1000).setCloudletScheduler(new CloudletSchedulerTimeShared());
             list.add(vm);
         }
 
@@ -102,19 +119,51 @@ public class AntColonyVMP {
     /**
      * Creates a list of Cloudlets.
      */
-    private List<Cloudlet> createCloudlets() {
-        final List<Cloudlet> list = new ArrayList<>(CLOUDLETS);
+    private void createAndSubmitCloudlets() {
+        double initialCpu = 0.6;
+        for (int i = 0; i < VMS - 1; i++) {
+            createCloudletsForVm(vmList.get(i), initialCpu, false);
+            initialCpu += 0.05;
+        }
+        createCloudletsForVm(vmList.get(vmList.size() - 1), initialCpu, true);
+    }
 
-        // UtilizationModel defining the Cloudlets use only 50% of any resource all the
-        // time
-        final UtilizationModelDynamic utilizationModel = new UtilizationModelDynamic(0.5);
+    private void createCloudletsForVm(Vm vm, double initialCpu, boolean dynamicUsage) {
+        List<Cloudlet> cloudletList = new ArrayList<>(CLOUDLETS_BY_VM);
+        for (int i = 0; i < CLOUDLETS_BY_VM; i++) {
+            long cloudletId = vm.getId() + i;
+            final Cloudlet cloudlet = new CloudletSimple(cloudletId, CLOUDLET_LENGTH, CLOUDLET_PES)
+                    .setUtilizationModelCpu(createUtilizationModel(initialCpu, 0.9, dynamicUsage)).setSizes(1024);
+            cloudletList.add(cloudlet);
+        }
+        broker.submitCloudletList(cloudletList);
 
-        for (int i = 0; i < CLOUDLETS; i++) {
-            final Cloudlet cloudlet = new CloudletSimple(CLOUDLET_LENGTH, CLOUDLET_PES, utilizationModel);
-            cloudlet.setSizes(1024);
-            list.add(cloudlet);
+        for (Cloudlet c : cloudletList) {
+            broker.bindCloudletToVm(c, vm);
+        }
+    }
+
+    private UtilizationModel createUtilizationModel(double initialCpuUsagePercent, double maxCloudletCpuUsagePercent,
+            final boolean progressiveCpuUsage) {
+        initialCpuUsagePercent = Math.min(initialCpuUsagePercent, 1);
+        maxCloudletCpuUsagePercent = Math.min(maxCloudletCpuUsagePercent, 1);
+        final UtilizationModelDynamic um = new UtilizationModelDynamic(initialCpuUsagePercent);
+
+        if (progressiveCpuUsage) {
+            um.setUtilizationUpdateFunction(this::getCpuUtilizationIncrement);
         }
 
-        return list;
+        um.setMaxResourceUtilization(maxCloudletCpuUsagePercent);
+        return um;
+    }
+
+    /**
+     * Increments the CPU resource utilization, that is defined in percentage
+     * values.
+     *
+     * @return the new resource utilization after the increment
+     */
+    private double getCpuUtilizationIncrement(final UtilizationModelDynamic um) {
+        return um.getUtilization() + um.getTimeSpan() * CLOUDLET_CPU_USAGE_INCREMENT_PER_SECOND;
     }
 }
