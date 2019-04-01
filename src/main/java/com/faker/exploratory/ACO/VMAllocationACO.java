@@ -90,12 +90,17 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
                     }
                     availableVms.remove(nextTriple.getMiddle());
                     updateLocalPheromone(nextTriple);
-                    updateUsedCapacity(nextTriple);
+                    // updateUsedCapacity(nextTriple);
                     localMigrationPlan.add(nextTriple);
                     double score = getRouteScore(localMigrationPlan);
                     if (score > localScore) {
                         localScore = score;
+                        Vm vmMigrated = nextTriple.getMiddle();
+                        LOGGER.debug("Tuple: {}", nextTriple);
+                        LOGGER.debug("Score update: {}", localScore);
+                        availableTuples.removeIf(tuple -> tuple.getMiddle() == vmMigrated);
                     } else {
+                        LOGGER.info("Ant {} removing {}", ant, nextTriple);
                         localMigrationPlan.remove(nextTriple);
                     }
                     // LOGGER.info("Migration plan: {}", localMigrationPlan);
@@ -135,17 +140,19 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
     private double getRouteScore(Set<Triple<Host, Vm, Host>> migrationPlan) {
         Map<Host, Integer> sourceMigrations = new HashMap<>();
         for (Triple<Host, Vm, Host> tuple : migrationPlan) {
-            int initialVal = sourceMigrations.getOrDefault(tuple.getLeft(), 0);
-            sourceMigrations.put(tuple.getLeft(), initialVal + 1);
+            int sourceVal = sourceMigrations.getOrDefault(tuple.getLeft(), tuple.getLeft().getVmList().size());
+            int targetVal = sourceMigrations.getOrDefault(tuple.getRight(), tuple.getRight().getVmList().size());
+            sourceMigrations.put(tuple.getLeft(), sourceVal - 1);
+            sourceMigrations.put(tuple.getRight(), targetVal + 1);
         }
         int sleepingHostCount = 0;
         for (Host host : getHostList()) {
             if (sourceMigrations.get(host) == null)
                 continue;
-            if (host.getVmList().size() <= sourceMigrations.get(host))
+            if (sourceMigrations.get(host) == 0)
                 sleepingHostCount++;
         }
-        return (Math.pow(sleepingHostCount, this.gamma)) + (1 / migrationPlan.size());
+        return (Math.pow(sleepingHostCount, this.gamma)) + (1.0 / migrationPlan.size());
     }
 
     private Optional<Triple<Host, Vm, Host>> chooseNextTriple(final Set<Triple<Host, Vm, Host>> availableTuples) {
