@@ -9,13 +9,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
-import java.util.function.BiFunction;
 import java.util.stream.Collectors;
+
+import com.faker.exploratory.StatePowerModel;
 
 import org.apache.commons.lang3.tuple.Triple;
 import org.apache.commons.math3.distribution.EnumeratedIntegerDistribution;
 import org.cloudbus.cloudsim.allocationpolicies.migration.VmAllocationPolicyMigrationAbstract;
 import org.cloudbus.cloudsim.hosts.Host;
+import org.cloudbus.cloudsim.selectionpolicies.power.PowerVmSelectionPolicy;
 import org.cloudbus.cloudsim.selectionpolicies.power.PowerVmSelectionPolicyMinimumUtilization;
 import org.cloudbus.cloudsim.vms.Vm;
 import org.slf4j.Logger;
@@ -31,19 +33,19 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
      */
     private final Map<Vm, Host> savedAllocation;
 
-    private final int iterations = 2;
-    private final int countAnts = 10;
+    private final int iterations = 1;
+    private final int countAnts = 2;
     private final double exploitationParam = 0.9;
     private final double beta = 0.9;
     private final int gamma = 5;
     private final double rho = 0.1;
     private final double alpha = 0.1;
     private final Map<Triple<Host, Vm, Host>, Double> pheromoneMap;
-    private final double initialPheromone = 1.0;
+    private final double initialPheromone = 10.0;
 
-    public VMAllocationACO() {
-        super(new PowerVmSelectionPolicyMinimumUtilization());
-        this.setUnderUtilizationThreshold(0.5);
+    public VMAllocationACO(PowerVmSelectionPolicy vmSelectionPolicy) {
+        super(vmSelectionPolicy);
+        this.setUnderUtilizationThreshold(0.4);
         this.pheromoneMap = new HashMap<>();
         this.savedAllocation = new HashMap<>();
     }
@@ -53,6 +55,7 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         final Set<Host> overloadedHosts = getOverloadedHosts();
         LOGGER.debug("Overloads: {}", overloadedHosts);
         final Set<Host> underloadedHosts = getUnderloadedHosts();
+        LOGGER.debug("Underloads: {}", underloadedHosts);
 
         final Set<Host> targetHosts = getTargetHosts(overloadedHosts);
         final Set<Host> sourceHosts = getSourceHosts(underloadedHosts, overloadedHosts);
@@ -89,24 +92,29 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
                         continue;
                     }
                     availableVms.remove(nextTriple.getMiddle());
+                    // if ((nextTriple.getRight().getUtilizationOfCpuMips()
+                    // + nextTriple.getMiddle().getCurrentRequestedTotalMips())
+                    // / nextTriple.getRight().getTotalMipsCapacity() > 0.6) {
+                    // continue;
+                    // }
                     updateLocalPheromone(nextTriple);
-                    // updateUsedCapacity(nextTriple);
+                    updateUsedCapacity(nextTriple);
                     localMigrationPlan.add(nextTriple);
                     double score = getRouteScore(localMigrationPlan);
                     if (score > localScore) {
                         localScore = score;
                         Vm vmMigrated = nextTriple.getMiddle();
-                        LOGGER.debug("Tuple: {}", nextTriple);
-                        LOGGER.debug("Score update: {}", localScore);
+                        // LOGGER.debug("Tuple: {}", nextTriple);
+                        // LOGGER.debug("Score update: {}", localScore);
                         availableTuples.removeIf(tuple -> tuple.getMiddle() == vmMigrated);
                     } else {
-                        LOGGER.info("Ant {} removing {}", ant, nextTriple);
+                        // LOGGER.info("Ant {} removing {}", ant, nextTriple);
                         localMigrationPlan.remove(nextTriple);
                     }
                     // LOGGER.info("Migration plan: {}", localMigrationPlan);
                     optional = chooseNextTriple(availableTuples);
                 }
-                LOGGER.info("Ant {}: score = {}", ant, localScore);
+                // LOGGER.info("Ant {}: score = {}", ant, localScore);
                 if (globalScore < 0 || localScore > globalScore) {
                     globalMigrationPlan = localMigrationPlan;
                     globalScore = localScore;
@@ -176,9 +184,8 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         for (int i = 0; i < lenTuple; i++) {
             probabs[i] = probabs[i] / totalWeight;
         }
-
         double q = new Random().nextDouble();
-        if (q > exploitationParam) {
+        if (totalWeight > 0 && q > exploitationParam) {
             int randIndex = new EnumeratedIntegerDistribution(indices, probabs).sample();
             return Optional.of(tupleList.get(randIndex));
         } else {
@@ -205,6 +212,12 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         tuple.getLeft().destroyTemporaryVm(vm);
         tuple.getRight().createTemporaryVm(vm);
     }
+
+    // private void resetUsedCapacity(Triple<Host, Vm, Host> tuple) {
+    // Vm vm = tuple.getMiddle();
+    // tuple.getLeft().destroyTemporaryVm(vm);
+    // tuple.getRight().createTemporaryVm(vm);
+    // }
 
     private void updateLocalPheromone(Triple<Host, Vm, Host> tuple) {
         double initialVal = this.pheromoneMap.get(tuple);
@@ -236,20 +249,29 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
         Set<Host> targetHosts = new HashSet<>();
         targetHosts.addAll(this.getHostList());
         targetHosts.removeAll(overloadedHosts);
+        targetHosts.removeAll(getInActiveHosts(this.getHostList()));
         return targetHosts;
     }
 
     private boolean _isHostUnderloadAndActive(final Host host) {
-        return host.isActive() && host.getUtilizationOfCpu() < 0.2;
+        if (host.getUtilizationOfCpu() <= 0) {
+            host.setActive(false);
+            // ((StatePowerModel) host.getPowerModel()).setIdleOff(true);
+        }
+        return host.isActive() && host.getUtilizationOfCpu() > 0 && host.getUtilizationOfCpu() < 0.2;
     }
 
     private boolean _isHostOverloaded(final Host host) {
+        if (host.getUtilizationOfCpu() <= 0) {
+            host.setActive(true);
+            // ((StatePowerModel) host.getPowerModel()).setIdleOff(false);
+        }
         return host.getUtilizationOfCpu() > 0.5;
     }
 
     @Override
     public double getOverUtilizationThreshold(Host host) {
-        return 0.9;
+        return 0.5;
     }
 
     /**
@@ -276,6 +298,11 @@ public class VMAllocationACO extends VmAllocationPolicyMigrationAbstract {
     private Set<Host> getUnderloadedHosts() {
         return this.getHostList().stream().filter(this::_isHostUnderloadAndActive)
                 .filter(host -> host.getVmsMigratingOut().isEmpty()).collect(Collectors.toSet());
+    }
+
+    private Set<Host> getInActiveHosts(List<Host> hosts) {
+        return hosts.stream().filter(host -> !(host.isActive() && host.getUtilizationOfCpu() > 0))
+                .collect(Collectors.toSet());
     }
 
     /**
