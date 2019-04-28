@@ -6,6 +6,13 @@
 	"configurations": [
 		{
 			"type": "java",
+			"name": "CodeLens (Launch) - SwfWorkloadFormatExample1",
+			"request": "launch",
+			"mainClass": "com.faker.exploratory.SwfWorkloadFormatExample1",
+			"projectName": "cloud-computing"
+		},
+		{
+			"type": "java",
 			"name": "CodeLens (Launch) - AntColonyVMP",
 			"request": "launch",
 			"mainClass": "com.faker.exploratory.ACO.AntColonyVMP",

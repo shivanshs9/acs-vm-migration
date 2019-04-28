@@ -19,7 +19,7 @@
         <dependency>
             <groupId>org.cloudsimplus</groupId>
             <artifactId>cloudsim-plus</artifactId>
-            <version>4.1.2</version>
+            <version>4.3.1</version>
         </dependency>
     </dependencies>
     <build>
@@ -58,7 +58,7 @@
                         </execution>
                     </executions>
                     <configuration>
-                        <mainClass>com.faker.exploratory.ACO.AntColonyVMP</mainClass>
+                        <!-- <mainClass>com.faker.exploratory.ACO.AntColonyVMP</mainClass> -->
                         <arguments>
                         </arguments>
                     </configuration>
