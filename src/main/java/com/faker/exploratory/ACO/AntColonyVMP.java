@@ -211,10 +211,10 @@ public class AntColonyVMP {
     }
 
     private double printHostHistory(Host host) {
-        // if (shouldPrintHostStateHistory(host)) {
+        if (shouldPrintHostStateHistory(host)) {
         return printHostCpuUsageAndPowerConsumption(host);
-        // }
-        // return 0;
+        }
+        return 0;
     }
 
     /**
